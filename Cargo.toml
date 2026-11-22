@@ -1,0 +1,25 @@
+[package]
+name = "iutil"
+version = "0.1.0"
+edition = "2024"
+description = "Utility tools for iPhone data on Windows"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Large-Croissant/iUtil"
+
+[dependencies]
+anyhow = "1"
+crabapple = "=0.4.8"
+csv = "1"
+eframe = "0.37.0"
+idevice = { version = "=0.1.68", features = ["mobilebackup2", "pair", "usbmuxd"] }
+imessage-database = "=5.0.1"
+rfd = "0.18.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[profile.release]
+lto = "thin"
+strip = true

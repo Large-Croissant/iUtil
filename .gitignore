@@ -1,0 +1,26 @@
+# Build output
+/target
+*.pdb
+
+# Local backups, exports, and device pairing records
+/backups/
+/exports/
+*.backup
+Manifest.plist
+Manifest.db
+Status.plist
+Info.plist
+pairing*.plist
+*.pairing
+sms.db
+chat.db
+*.sqlite
+*.sqlite3
+*.db
+
+# Local configuration and logs
+.env
+.env.*
+*.log
+/.vscode/
+/.idea/
