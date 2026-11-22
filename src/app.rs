@@ -1,15 +1,18 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     time::Duration,
 };
 
+use anyhow::Context;
 use eframe::egui;
 
 use crate::{
     backup::BackupSource,
+    device::{self, DeviceSummary},
     export::{ExportSummary, Formats, export_all},
-    messages::{Progress, build_bundle},
+    messages::build_bundle,
+    model::Progress,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +23,7 @@ enum SourceMode {
 
 enum WorkerMessage {
     Progress(Progress),
+    Devices(Vec<DeviceSummary>),
     Done(ExportSummary),
     Failed(String),
 }
@@ -31,9 +35,12 @@ pub struct IUtilApp {
     password: String,
     show_password: bool,
     formats: Formats,
+    devices: Vec<DeviceSummary>,
+    selected_udid: Option<String>,
     status: String,
     progress: Option<(f32, String)>,
     worker: Option<Receiver<WorkerMessage>>,
+    scanning: bool,
     summary: Option<ExportSummary>,
 }
 
@@ -56,9 +63,12 @@ impl IUtilApp {
                 csv: true,
                 html: true,
             },
-            status: "Choose an iOS backup folder to begin.".to_owned(),
+            devices: Vec::new(),
+            selected_udid: None,
+            status: "Choose an iOS backup folder, or connect an iPhone over USB.".to_owned(),
             progress: None,
             worker: None,
+            scanning: false,
             summary: None,
         }
     }
@@ -68,11 +78,38 @@ impl IUtilApp {
     }
 
     fn can_start(&self) -> bool {
-        !self.busy()
-            && self.source_mode == SourceMode::BackupFolder
-            && !self.backup_path.trim().is_empty()
-            && !self.output_path.trim().is_empty()
-            && (self.formats.json || self.formats.csv || self.formats.html)
+        if self.busy()
+            || self.output_path.trim().is_empty()
+            || !(self.formats.json || self.formats.csv || self.formats.html)
+        {
+            return false;
+        }
+
+        match self.source_mode {
+            SourceMode::BackupFolder => !self.backup_path.trim().is_empty(),
+            SourceMode::UsbDevice => self.selected_udid.is_some(),
+        }
+    }
+
+    fn refresh_devices(&mut self) {
+        if self.busy() {
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        self.worker = Some(receiver);
+        self.scanning = true;
+        self.progress = None;
+        self.status = "Looking for connected iPhones...".to_owned();
+
+        std::thread::spawn(move || match device::list_devices() {
+            Ok(devices) => {
+                let _ = sender.send(WorkerMessage::Devices(devices));
+            }
+            Err(error) => {
+                let _ = sender.send(WorkerMessage::Failed(format!("{error:#}")));
+            }
+        });
     }
 
     fn start_export(&mut self) {
@@ -80,8 +117,10 @@ impl IUtilApp {
             return;
         }
 
+        let mode = self.source_mode;
         let backup_path = self.backup_path.trim().to_owned();
         let output_path = self.output_path.trim().to_owned();
+        let udid = self.selected_udid.clone();
         let password = std::mem::take(&mut self.password);
         let formats = self.formats;
         let (sender, receiver) = mpsc::channel();
@@ -90,6 +129,7 @@ impl IUtilApp {
         self.status = "Exporting...".to_owned();
         self.summary = None;
         self.worker = Some(receiver);
+        self.scanning = false;
 
         std::thread::spawn(move || {
             let send_progress = |progress: Progress| {
@@ -97,22 +137,45 @@ impl IUtilApp {
             };
 
             let result = (|| -> anyhow::Result<ExportSummary> {
-                let source = BackupSource::open(
-                    &backup_path,
-                    if password.is_empty() {
-                        None
-                    } else {
-                        Some(password.as_str())
-                    },
-                )?;
+                let password = if password.is_empty() {
+                    None
+                } else {
+                    Some(password.as_str())
+                };
+
+                let mut temp_backup: Option<tempfile::TempDir> = None;
+                let backup_dir = match mode {
+                    SourceMode::BackupFolder => PathBuf::from(&backup_path),
+                    SourceMode::UsbDevice => {
+                        let udid = udid
+                            .as_deref()
+                            .context("No iPhone is selected")?;
+                        let temp = tempfile::Builder::new()
+                            .prefix("iutil-backup-")
+                            .tempdir()
+                            .context("Unable to create a temporary backup folder")?;
+                        device::backup_device(udid, password, temp.path(), &mut |progress| {
+                            send_progress(progress)
+                        })?;
+                        let dir = temp.path().join(udid);
+                        temp_backup = Some(temp);
+                        dir
+                    }
+                };
+
+                let source = BackupSource::open(&backup_dir, password)?;
                 let mut bundle = build_bundle(&source, &mut |progress| send_progress(progress))?;
-                export_all(
+                let summary = export_all(
                     &source,
                     &mut bundle,
                     Path::new(&output_path),
                     formats,
                     &mut |progress| send_progress(progress),
-                )
+                )?;
+
+                drop(source);
+                drop(temp_backup);
+                Ok(summary)
             })();
 
             match result {
@@ -137,6 +200,34 @@ impl IUtilApp {
                     self.progress = Some((progress.fraction, progress.message.clone()));
                     self.status = progress.message;
                 }
+                Ok(WorkerMessage::Devices(devices)) => {
+                    self.status = if devices.is_empty() {
+                        "No iPhone found. Connect one with a USB cable, unlock it, and try again."
+                            .to_owned()
+                    } else {
+                        format!(
+                            "Found {} iPhone{}. Unlock it and tap Trust if asked.",
+                            devices.len(),
+                            if devices.len() == 1 { "" } else { "s" }
+                        )
+                    };
+
+                    if let Some(selected) = &self.selected_udid
+                        && !devices.iter().any(|device| &device.udid == selected)
+                    {
+                        self.selected_udid = None;
+                    }
+                    if self.selected_udid.is_none() {
+                        self.selected_udid =
+                            devices.first().map(|device| device.udid.clone());
+                    }
+
+                    self.devices = devices;
+                    self.progress = None;
+                    self.worker = None;
+                    self.scanning = false;
+                    break;
+                }
                 Ok(WorkerMessage::Done(summary)) => {
                     self.status = format!(
                         "Exported {} messages from {} conversations ({} attachments copied).",
@@ -148,16 +239,22 @@ impl IUtilApp {
                     break;
                 }
                 Ok(WorkerMessage::Failed(error)) => {
-                    self.status = format!("Export failed: {error}");
+                    self.status = if self.scanning {
+                        format!("Could not find iPhones: {error}")
+                    } else {
+                        format!("Export failed: {error}")
+                    };
                     self.progress = None;
                     self.worker = None;
+                    self.scanning = false;
                     break;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.status = "The export worker stopped unexpectedly.".to_owned();
+                    self.status = "The background worker stopped unexpectedly.".to_owned();
                     self.progress = None;
                     self.worker = None;
+                    self.scanning = false;
                     break;
                 }
             }
@@ -190,11 +287,18 @@ impl eframe::App for IUtilApp {
                     SourceMode::BackupFolder,
                     "Existing iOS backup folder",
                 );
-                ui.radio_value(
-                    &mut self.source_mode,
-                    SourceMode::UsbDevice,
-                    "Connected iPhone over USB (coming next)",
-                );
+                if ui
+                    .radio_value(
+                        &mut self.source_mode,
+                        SourceMode::UsbDevice,
+                        "Connected iPhone over USB",
+                    )
+                    .clicked()
+                    && self.devices.is_empty()
+                    && !self.busy()
+                {
+                    self.refresh_devices();
+                }
 
                 ui.add_space(10.0);
                 match self.source_mode {
@@ -214,9 +318,48 @@ impl eframe::App for IUtilApp {
                         });
                     }
                     SourceMode::UsbDevice => {
-                        ui.label(
-                            "USB backup support is being added. For now, make a backup with Apple Devices or iTunes and select it above.",
-                        );
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!self.busy(), egui::Button::new("Find iPhones"))
+                                .clicked()
+                            {
+                                self.refresh_devices();
+                            }
+                            ui.label(
+                                egui::RichText::new(
+                                    "Unlock the iPhone and tap Trust when it asks.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        });
+
+                        ui.add_space(6.0);
+                        if self.devices.is_empty() {
+                            ui.label("No iPhone detected yet.");
+                        } else {
+                            let devices = self.devices.clone();
+                            for device in &devices {
+                                let label = if device.paired {
+                                    format!(
+                                        "iPhone {} ({})",
+                                        device.short_udid(),
+                                        device.connection
+                                    )
+                                } else {
+                                    format!(
+                                        "iPhone {} ({}) - will ask you to trust this computer",
+                                        device.short_udid(),
+                                        device.connection
+                                    )
+                                };
+                                ui.radio_value(
+                                    &mut self.selected_udid,
+                                    Some(device.udid.clone()),
+                                    label,
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -232,9 +375,14 @@ impl eframe::App for IUtilApp {
                     ui.checkbox(&mut self.show_password, "Show");
                 });
                 ui.label(
-                    egui::RichText::new(
-                        "Passwords are kept in memory for this export only and are never saved.",
-                    )
+                    egui::RichText::new(match self.source_mode {
+                        SourceMode::BackupFolder => {
+                            "Passwords are kept in memory for this export only and are never saved."
+                        }
+                        SourceMode::UsbDevice => {
+                            "If encryption is enabled on the iPhone, this password protects the temporary backup and is used to read it. It is never saved."
+                        }
+                    })
                     .small()
                     .weak(),
                 );
@@ -248,8 +396,7 @@ impl eframe::App for IUtilApp {
                 ui.horizontal(|ui| {
                     ui.label("Output folder:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.output_path)
-                            .desired_width(520.0),
+                        egui::TextEdit::singleline(&mut self.output_path).desired_width(520.0),
                     );
                     if ui.button("Browse...").clicked()
                         && let Some(folder) = rfd::FileDialog::new().pick_folder()
@@ -271,7 +418,7 @@ impl eframe::App for IUtilApp {
 
             ui.horizontal(|ui| {
                 let button = egui::Button::new(if self.busy() {
-                    "Exporting..."
+                    "Working..."
                 } else {
                     "Export messages"
                 });

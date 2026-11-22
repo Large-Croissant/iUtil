@@ -2,6 +2,7 @@
 
 mod app;
 mod backup;
+mod device;
 mod export;
 mod messages;
 mod model;

@@ -9,8 +9,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     backup::BackupSource,
-    messages::Progress,
-    model::{AttachmentRecord, ChatRecord, ExportBundle, MessageRecord},
+    model::{AttachmentRecord, ChatRecord, ExportBundle, MessageRecord, Progress},
 };
 
 #[derive(Debug, Clone, Copy)]

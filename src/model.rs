@@ -2,6 +2,13 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+/// A single progress update from a background worker.
+#[derive(Debug, Clone)]
+pub struct Progress {
+    pub fraction: f32,
+    pub message: String,
+}
+
 /// Everything produced by one export run.
 #[derive(Debug, Serialize)]
 pub struct ExportBundle {

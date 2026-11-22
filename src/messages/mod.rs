@@ -22,15 +22,10 @@ use crate::{
     backup::{BackupSource, attachment_source},
     model::{
         AttachmentMetaRecord, AttachmentRecord, ChatRecord, ComponentRecord, EditEventRecord,
-        EditRecord, ExportBundle, MessageRecord, ParticipantRecord, ReactionRecord, RunRecord,
-        SourceInfo,
+        EditRecord, ExportBundle, MessageRecord, ParticipantRecord, Progress, ReactionRecord,
+        RunRecord, SourceInfo,
     },
 };
-
-pub struct Progress {
-    pub fraction: f32,
-    pub message: String,
-}
 
 pub fn build_bundle(
     source: &BackupSource,
@@ -202,7 +197,7 @@ pub fn build_bundle(
         messages.push(message_record(&message, sender));
         processed += 1;
 
-        if processed % 500 == 0 {
+        if processed.is_multiple_of(500) {
             on_progress(Progress {
                 fraction: 0.15,
                 message: format!("Read {processed} messages..."),
