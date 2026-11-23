@@ -44,7 +44,8 @@ pub fn export_all(
         message: "Copying attachments...".to_owned(),
     });
 
-    let copied_attachments = copy_attachments(source, &mut bundle.attachments, output_dir, on_progress)?;
+    let copied_attachments =
+        copy_attachments(source, &mut bundle.attachments, output_dir, on_progress)?;
 
     let mut files = Vec::new();
 
@@ -144,11 +145,12 @@ fn attachment_name(attachment: &AttachmentRecord) -> String {
     let raw = attachment
         .transfer_name
         .as_deref()
-        .or_else(|| attachment.filename.as_deref().and_then(|name| {
-            Path::new(name)
-                .file_name()
-                .and_then(|name| name.to_str())
-        }))
+        .or_else(|| {
+            attachment
+                .filename
+                .as_deref()
+                .and_then(|name| Path::new(name).file_name().and_then(|name| name.to_str()))
+        })
         .unwrap_or("attachment");
 
     let mut safe = String::with_capacity(raw.len());
@@ -226,9 +228,18 @@ fn write_csv(bundle: &ExportBundle, output_dir: &Path, files: &mut Vec<PathBuf>)
             message.thread_originator_part.clone().unwrap_or_default(),
             message.num_attachments.to_string(),
             message.num_replies.to_string(),
-            message.deleted_from.map(|value| value.to_string()).unwrap_or_default(),
-            message.filter_action.map(|value| value.to_string()).unwrap_or_default(),
-            message.filter_sub_action.map(|value| value.to_string()).unwrap_or_default(),
+            message
+                .deleted_from
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            message
+                .filter_action
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            message
+                .filter_sub_action
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         ])?;
     }
     writer.flush()?;
@@ -469,7 +480,9 @@ fn write_html(bundle: &ExportBundle, path: &Path) -> Result<()> {
     let edits_by_message: HashMap<&str, Vec<&crate::model::EditRecord>> = {
         let mut map: HashMap<&str, Vec<&crate::model::EditRecord>> = HashMap::new();
         for edit in &bundle.edits {
-            map.entry(edit.message_guid.as_str()).or_default().push(edit);
+            map.entry(edit.message_guid.as_str())
+                .or_default()
+                .push(edit);
         }
         map
     };
@@ -532,11 +545,11 @@ fn render_chat(
     }
 
     for message in messages {
-        let sender = message.sender.as_deref().unwrap_or(if message.is_from_me {
-            "Me"
-        } else {
-            "Unknown"
-        });
+        let sender =
+            message
+                .sender
+                .as_deref()
+                .unwrap_or(if message.is_from_me { "Me" } else { "Unknown" });
         html.push_str(&format!(
             "<div class=\"message{}\">",
             if message.is_from_me { " me" } else { "" }
@@ -548,7 +561,10 @@ fn render_chat(
             html.push_str(&escape_html(date));
         }
         if let Some(service) = &message.service {
-            html.push_str(&format!("<span class=\"badge\">{}</span>", escape_html(service)));
+            html.push_str(&format!(
+                "<span class=\"badge\">{}</span>",
+                escape_html(service)
+            ));
         }
         html.push_str("</div>");
 
@@ -594,11 +610,7 @@ fn render_chat(
                 for event in &edit.events {
                     html.push_str(&format!(
                         "<div>&middot; {}{}</div>",
-                        event
-                            .date
-                            .as_deref()
-                            .map(escape_html)
-                            .unwrap_or_default(),
+                        event.date.as_deref().map(escape_html).unwrap_or_default(),
                         if event.date.is_some() { ": " } else { "" },
                     ));
                     html.push_str(&format!(

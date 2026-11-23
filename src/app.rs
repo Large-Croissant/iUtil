@@ -81,6 +81,7 @@ impl IUtilApp {
         if self.busy()
             || self.output_path.trim().is_empty()
             || !(self.formats.json || self.formats.csv || self.formats.html)
+            || self.usb_needs_password()
         {
             return false;
         }
@@ -89,6 +90,20 @@ impl IUtilApp {
             SourceMode::BackupFolder => !self.backup_path.trim().is_empty(),
             SourceMode::UsbDevice => self.selected_udid.is_some(),
         }
+    }
+
+    fn selected_device(&self) -> Option<&DeviceSummary> {
+        let udid = self.selected_udid.as_deref()?;
+        self.devices.iter().find(|device| device.udid == udid)
+    }
+
+    fn usb_needs_password(&self) -> bool {
+        self.source_mode == SourceMode::UsbDevice
+            && self.password.is_empty()
+            && self
+                .selected_device()
+                .and_then(|device| device.encrypted_backups)
+                == Some(true)
     }
 
     fn refresh_devices(&mut self) {
@@ -132,10 +147,6 @@ impl IUtilApp {
         self.scanning = false;
 
         std::thread::spawn(move || {
-            let send_progress = |progress: Progress| {
-                let _ = sender.send(WorkerMessage::Progress(progress));
-            };
-
             let result = (|| -> anyhow::Result<ExportSummary> {
                 let password = if password.is_empty() {
                     None
@@ -143,20 +154,30 @@ impl IUtilApp {
                     Some(password.as_str())
                 };
 
+                // The USB backup gets the first 15% of the bar so it does not
+                // reset when reading the Messages database begins.
+                let backup_span: f32 = match mode {
+                    SourceMode::BackupFolder => 0.0,
+                    SourceMode::UsbDevice => 0.15,
+                };
+
                 let mut temp_backup: Option<tempfile::TempDir> = None;
                 let backup_dir = match mode {
                     SourceMode::BackupFolder => PathBuf::from(&backup_path),
                     SourceMode::UsbDevice => {
-                        let udid = udid
-                            .as_deref()
-                            .context("No iPhone is selected")?;
+                        let udid = udid.as_deref().context("No iPhone is selected")?;
                         let temp = tempfile::Builder::new()
                             .prefix("iutil-backup-")
                             .tempdir()
                             .context("Unable to create a temporary backup folder")?;
-                        device::backup_device(udid, password, temp.path(), &mut |progress| {
-                            send_progress(progress)
-                        })?;
+                        let backup_sender = sender.clone();
+                        let mut report_backup = move |progress: Progress| {
+                            let _ = backup_sender.send(WorkerMessage::Progress(Progress {
+                                fraction: progress.fraction * backup_span,
+                                message: progress.message,
+                            }));
+                        };
+                        device::backup_device(udid, password, temp.path(), &mut report_backup)?;
                         let dir = temp.path().join(udid);
                         temp_backup = Some(temp);
                         dir
@@ -164,13 +185,20 @@ impl IUtilApp {
                 };
 
                 let source = BackupSource::open(&backup_dir, password)?;
-                let mut bundle = build_bundle(&source, &mut |progress| send_progress(progress))?;
+
+                let mut send_export_progress = |progress: Progress| {
+                    let _ = sender.send(WorkerMessage::Progress(Progress {
+                        fraction: backup_span + progress.fraction * (1.0 - backup_span),
+                        message: progress.message,
+                    }));
+                };
+                let mut bundle = build_bundle(&source, &mut send_export_progress)?;
                 let summary = export_all(
                     &source,
                     &mut bundle,
                     Path::new(&output_path),
                     formats,
-                    &mut |progress| send_progress(progress),
+                    &mut send_export_progress,
                 )?;
 
                 drop(source);
@@ -218,8 +246,7 @@ impl IUtilApp {
                         self.selected_udid = None;
                     }
                     if self.selected_udid.is_none() {
-                        self.selected_udid =
-                            devices.first().map(|device| device.udid.clone());
+                        self.selected_udid = devices.first().map(|device| device.udid.clone());
                     }
 
                     self.devices = devices;
@@ -340,19 +367,23 @@ impl eframe::App for IUtilApp {
                         } else {
                             let devices = self.devices.clone();
                             for device in &devices {
-                                let label = if device.paired {
-                                    format!(
-                                        "iPhone {} ({})",
-                                        device.short_udid(),
-                                        device.connection
-                                    )
-                                } else {
-                                    format!(
-                                        "iPhone {} ({}) - will ask you to trust this computer",
-                                        device.short_udid(),
-                                        device.connection
-                                    )
-                                };
+                                let mut label = format!(
+                                    "iPhone {} ({})",
+                                    device.short_udid(),
+                                    device.connection
+                                );
+                                match (device.paired, device.encrypted_backups) {
+                                    (false, _) => {
+                                        label.push_str(" - will ask you to trust this computer");
+                                    }
+                                    (true, Some(true)) => {
+                                        label.push_str(" - encrypted backups, password required");
+                                    }
+                                    (true, Some(false)) => {
+                                        label.push_str(" - backups are not encrypted");
+                                    }
+                                    (true, None) => {}
+                                }
                                 ui.radio_value(
                                     &mut self.selected_udid,
                                     Some(device.udid.clone()),
@@ -380,12 +411,22 @@ impl eframe::App for IUtilApp {
                             "Passwords are kept in memory for this export only and are never saved."
                         }
                         SourceMode::UsbDevice => {
-                            "If encryption is enabled on the iPhone, this password protects the temporary backup and is used to read it. It is never saved."
+                            "Only needed if the iPhone has encrypted backups turned on. The password is used to read the temporary backup, is kept in memory, and is never saved. iUtil never changes your iPhone's encryption settings."
                         }
                     })
                     .small()
                     .weak(),
                 );
+
+                if self.usb_needs_password() {
+                    ui.label(
+                        egui::RichText::new(
+                            "This iPhone has encrypted backups turned on. Enter its backup password to continue.",
+                        )
+                        .small()
+                        .color(ui.visuals().warn_fg_color),
+                    );
+                }
             });
 
             ui.add_space(12.0);

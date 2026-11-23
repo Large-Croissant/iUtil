@@ -40,13 +40,17 @@ cargo build --release
 
 1. Choose **Existing iOS backup folder** and select a backup, or choose
    **Connected iPhone over USB**, plug in the iPhone, and press **Find iPhones**.
-2. If the backup is encrypted, enter its password. Passwords are used only in
-   memory for this export and are never saved.
+2. If the backup is encrypted, enter its password. The same applies when the
+   iPhone has encrypted backups turned on. Passwords are used only in memory for
+   this export and are never saved.
 3. Pick an output folder and the formats you want.
 4. Press **Export messages**.
 
 A USB export makes a full temporary backup first, reads the Messages database
-from it, and deletes the temporary backup when the export finishes.
+from it, and deletes the temporary backup when the export finishes. iOS decides
+whether that backup is encrypted. If it is, iUtil needs the iPhone's backup
+password to read it. The password is never sent to the phone, and iUtil never
+turns encryption on, turns it off, or changes the password.
 
 ## What gets exported
 
@@ -61,6 +65,7 @@ from it, and deletes the temporary backup when the export finishes.
 iMessage data is highly sensitive. This project:
 
 - never stores backup passwords; they are used in memory for the current export
+- never changes your iPhone's backup encryption settings
 - keeps temporary USB backups in the system temporary folder and removes them
   after the export
 - does not log message contents by default

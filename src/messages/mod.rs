@@ -47,8 +47,10 @@ pub fn build_bundle(
     });
 
     let handles = Handle::load(&db).context("Unable to load message participants")?;
-    let handle_by_rowid: HashMap<i32, Handle> =
-        handles.into_iter().map(|handle| (handle.rowid, handle)).collect();
+    let handle_by_rowid: HashMap<i32, Handle> = handles
+        .into_iter()
+        .map(|handle| (handle.rowid, handle))
+        .collect();
 
     let participants_by_chat =
         ChatToHandle::participants_by_chat(&db).context("Unable to load chat participants")?;
@@ -170,7 +172,10 @@ pub fn build_bundle(
         if let Some(edited) = &message.edited_parts {
             for (part_index, part) in edited.parts.iter().enumerate() {
                 if part.edit_history.is_empty()
-                    && matches!(part.status, imessage_database::message_types::edited::EditStatus::Original)
+                    && matches!(
+                        part.status,
+                        imessage_database::message_types::edited::EditStatus::Original
+                    )
                 {
                     continue;
                 }
@@ -183,9 +188,7 @@ pub fn build_bundle(
                         .edit_history
                         .iter()
                         .map(|event| EditEventRecord {
-                            date: to_utc(event.date)
-                                .ok()
-                                .map(|date| date.to_rfc3339()),
+                            date: to_utc(event.date).ok().map(|date| date.to_rfc3339()),
                             text: event.text.clone(),
                             guid: event.guid.clone(),
                         })
@@ -295,7 +298,11 @@ fn run_record(run: &AttributedRange) -> RunRecord {
     RunRecord {
         start: run.start,
         end: run.end,
-        effects: run.effects.iter().map(|effect| format!("{effect:?}")).collect(),
+        effects: run
+            .effects
+            .iter()
+            .map(|effect| format!("{effect:?}"))
+            .collect(),
         attachment: run.attachment.as_ref().map(|meta| AttachmentMetaRecord {
             guid: meta.guid.clone(),
             transcription: meta.transcription.clone(),
@@ -331,7 +338,9 @@ fn attachment_record(
     }
 }
 
-fn date_string(date: Result<DateTime<imessage_database::chrono::Utc>, impl std::fmt::Debug>) -> Option<String> {
+fn date_string(
+    date: Result<DateTime<imessage_database::chrono::Utc>, impl std::fmt::Debug>,
+) -> Option<String> {
     date.ok().map(|date| date.to_rfc3339())
 }
 

@@ -1,13 +1,10 @@
 use std::{
-    io::{copy, Write},
+    io::{Write, copy},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use crabapple::{
-    Authentication, Backup,
-    backup::models::manifest::manifest_plist::ManifestData,
-};
+use crabapple::{Authentication, Backup, backup::models::manifest::manifest_plist::ManifestData};
 use imessage_database::{
     tables::{attachment::Attachment, table::DEFAULT_PATH_IOS},
     util::platform::Platform,
@@ -31,10 +28,7 @@ impl BackupSource {
     pub fn open(root: impl Into<PathBuf>, password: Option<&str>) -> Result<Self> {
         let root = root.into();
         if !root.is_dir() {
-            bail!(
-                "The selected path is not a folder: {}",
-                root.display()
-            );
+            bail!("The selected path is not a folder: {}", root.display());
         }
 
         let manifest_path = root.join("Manifest.plist");
@@ -154,11 +148,7 @@ pub fn attachment_source(
     source: &BackupSource,
     attachment: &Attachment,
 ) -> Option<AttachmentSource> {
-    let resolved = attachment.resolved_attachment_path(
-        &Platform::iOS,
-        source.root(),
-        None,
-    )?;
+    let resolved = attachment.resolved_attachment_path(&Platform::iOS, source.root(), None)?;
 
     if source.is_encrypted() {
         Path::new(&resolved)
