@@ -142,11 +142,8 @@ async fn backup_device_async(
     })?;
 
     let pairing = ensure_pairing(&addr, &device, on_progress).await?;
-
-    let provider = PairedProvider {
-        inner: device.to_provider(addr, "iUtil"),
-        pairing: pairing.clone(),
-    };
+    let (mut client, provider, pairing) =
+        connect_backup_service(&addr, &device, pairing, on_progress).await?;
 
     on_progress(Progress {
         fraction: 0.0,
@@ -167,10 +164,6 @@ async fn backup_device_async(
         message: "Backing up your iPhone. Keep it connected and unlocked; this can take a while..."
             .to_owned(),
     });
-
-    let mut client = MobileBackup2Client::connect(&provider)
-        .await
-        .context("Unable to start the iPhone backup service")?;
 
     // The password is deliberately not part of the backup request: iOS encrypts
     // a backup with the keybag already configured on the device. Sending a
@@ -237,21 +230,103 @@ fn backup_is_encrypted(manifest_path: &Path) -> Result<bool> {
         .unwrap_or(false))
 }
 
+/// A pairing record and whether it came from Apple's device-service cache.
+struct Pairing {
+    file: PairingFile,
+    cached: bool,
+}
+
 async fn ensure_pairing(
     addr: &UsbmuxdAddr,
     device: &UsbmuxdDevice,
     on_progress: &mut (dyn FnMut(Progress) + Send),
-) -> Result<PairingFile> {
+) -> Result<Pairing> {
     let mut connection = connect_mux(addr, 3).await?;
-    if let Ok(pairing) = connection.get_pair_record(&device.udid).await {
-        return Ok(pairing);
+    if let Ok(file) = connection.get_pair_record(&device.udid).await {
+        return Ok(Pairing { file, cached: true });
     }
 
+    // Drop the usbmuxd connection before pairing so the pairing client gets a
+    // fresh connection instead of sharing one with a half-used request.
+    drop(connection);
+
+    Ok(Pairing {
+        file: pair_device(addr, device, on_progress).await?,
+        cached: false,
+    })
+}
+
+/// Start the backup service.
+///
+/// iOS can keep a pairing record that the phone no longer accepts (for example
+/// after resetting trust or restoring the phone). That shows up as
+/// `InvalidHostID` when the session starts, so replace a cached record with a
+/// fresh pairing and try once more. A record we just created is used as-is: if
+/// the phone rejects it, pairing again would only repeat the trust prompt.
+async fn connect_backup_service(
+    addr: &UsbmuxdAddr,
+    device: &UsbmuxdDevice,
+    pairing: Pairing,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<(MobileBackup2Client, PairedProvider, PairingFile)> {
+    let provider = paired_provider(addr, device, pairing.file.clone());
+
+    match MobileBackup2Client::connect(&provider).await {
+        Ok(client) => Ok((client, provider, pairing.file)),
+        Err(IdeviceError::InvalidHostID) if pairing.cached => {
+            on_progress(Progress {
+                fraction: 0.0,
+                message: "The iPhone no longer recognizes this computer. Unlock it and tap Trust \
+                          to pair again..."
+                    .to_owned(),
+            });
+
+            let file = pair_device(addr, device, on_progress).await?;
+            let provider = paired_provider(addr, device, file.clone());
+            let client = MobileBackup2Client::connect(&provider)
+                .await
+                .map_err(backup_service_error)?;
+
+            Ok((client, provider, file))
+        }
+        Err(error) => Err(backup_service_error(error)),
+    }
+}
+
+fn paired_provider(
+    addr: &UsbmuxdAddr,
+    device: &UsbmuxdDevice,
+    pairing: PairingFile,
+) -> PairedProvider {
+    PairedProvider {
+        inner: device.to_provider(addr.clone(), "iUtil"),
+        pairing,
+    }
+}
+
+fn backup_service_error(error: IdeviceError) -> anyhow::Error {
+    if matches!(error, IdeviceError::InvalidHostID) {
+        anyhow!(
+            "The iPhone rejected this computer's pairing. Unlock the iPhone, tap Trust when \
+             asked, and try again."
+        )
+    } else {
+        anyhow::Error::new(error).context("Unable to start the iPhone backup service")
+    }
+}
+
+/// Ask the iPhone to trust this computer and return the new pairing record.
+async fn pair_device(
+    addr: &UsbmuxdAddr,
+    device: &UsbmuxdDevice,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> Result<PairingFile> {
     on_progress(Progress {
         fraction: 0.0,
         message: "Waiting for you to trust this computer on the iPhone...".to_owned(),
     });
 
+    let mut connection = connect_mux(addr, 3).await?;
     let system_buid = connection
         .get_buid()
         .await
@@ -517,5 +592,13 @@ mod tests {
         }
 
         assert_eq!(updates, vec![0.5]);
+    }
+
+    #[test]
+    fn rejected_pairing_tells_the_user_to_trust_again() {
+        let message = backup_service_error(IdeviceError::InvalidHostID).to_string();
+
+        assert!(message.contains("Trust"), "{message}");
+        assert!(message.contains("pairing"), "{message}");
     }
 }

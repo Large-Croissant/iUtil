@@ -60,6 +60,18 @@ turns encryption on, turns it off, or changes the password.
 - `index.html` - a readable, self-contained conversation archive
 - `attachments/` - original attachment files, copied without conversion
 
+## Troubleshooting
+
+- **"The iPhone rejected this computer's pairing"**: the pairing record stored
+  on the PC is stale. Unlock the iPhone, keep it connected, and export again.
+  iUtil asks the iPhone to trust the computer again; tap **Trust** and enter the
+  passcode if asked.
+- **"Encrypted backups are turned on..."**: enter the iPhone's backup password.
+  This is the password set in iTunes/Finder or the Apple Devices app, not the
+  device passcode.
+- **The iPhone is not found**: install iTunes or the Apple Devices app so
+  Apple's Mobile Device Service is running, then reconnect the iPhone.
+
 ## Privacy and security
 
 iMessage data is highly sensitive. This project:
